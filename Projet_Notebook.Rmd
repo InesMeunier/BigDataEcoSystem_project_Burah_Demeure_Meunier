@@ -1,0 +1,488 @@
+---
+title: "Projet"
+output: html_notebook
+---
+
+
+```{r}
+##### IMPORT #####
+
+library("lubridate")
+library(magrittr)
+library(dplyr)
+library("viridis")
+library("tidyverse")
+library("broom")
+library("gridExtra")
+library("ggrepel")
+library("modelr")
+```
+
+```{r}
+##### IMPORTATION ET NETTOYAGE DES DONNÉES #####
+
+## Tous les matchs internationaux de football de 1872 à 2022 
+
+matchs_internationaux <- read.csv(file = "results.csv")
+matchs_internationaux$Year <- year(matchs_internationaux$date)
+matchs_internationaux$date <- as.Date(matchs_internationaux$date,"%Y-%m-%d")
+
+## Matches de la coupe du monde de football 2022  
+
+matchs_coupe_monde_2022 <- read.csv(file = "fifa-world-cup-2022-RomanceStandardTime.csv") 
+# supprimer les colonnes emplacement numéro de correspondance et résultat 
+matchs_coupe_monde_2022 <- matchs_coupe_monde_2022[, -4]
+matchs_coupe_monde_2022 <- matchs_coupe_monde_2022[, -7]
+matchs_coupe_monde_2022 <- matchs_coupe_monde_2022[, -1]
+matchs_coupe_monde_2022$Date <- as.Date(matchs_coupe_monde_2022$Date, "%d/%m/%Y %H:%M")
+# fixer le tour à G, LS, QF, SF et F
+matchs_coupe_monde_2022$Round.Number[matchs_coupe_monde_2022$Round.Number == 1] <- "G" 
+matchs_coupe_monde_2022$Round.Number[matchs_coupe_monde_2022$Round.Number == 2] <- "G"
+matchs_coupe_monde_2022$Round.Number[matchs_coupe_monde_2022$Round.Number == 3] <- "G" 
+matchs_coupe_monde_2022$Round.Number[matchs_coupe_monde_2022$Round.Number == "Round of 16"] <- "LS"
+matchs_coupe_monde_2022$Round.Number[matchs_coupe_monde_2022$Round.Number == "Quarter Finals"] <- "QF"
+matchs_coupe_monde_2022$Round.Number[matchs_coupe_monde_2022$Round.Number == "Semi Finals"] <- "SF"
+matchs_coupe_monde_2022$Round.Number[matchs_coupe_monde_2022$Round.Number == "Finals"] <- "F"
+# ajouter une colonne vide GameID
+matchs_coupe_monde_2022$GameID <- NA
+# remplir les lignes vides de la colonne Groupe 
+matchs_coupe_monde_2022$Group[matchs_coupe_monde_2022$Group == ""] <- NA 
+# définir GameID, Group, winner et looser
+matchs_coupe_monde_2022 <- group_by(matchs_coupe_monde_2022, Round.Number) 
+matchs_coupe_monde_2022 <- mutate(matchs_coupe_monde_2022, GameID=paste0(Round.Number,1:n()))
+matchs_coupe_monde_2022$Winner <- paste0("Winner_", matchs_coupe_monde_2022$GameID)
+matchs_coupe_monde_2022$Looser <- paste0("Looser_", matchs_coupe_monde_2022$GameID)
+matchs_coupe_monde_2022$Group <- ifelse(is.na(matchs_coupe_monde_2022$Group),"All", matchs_coupe_monde_2022$Group)
+matchs_coupe_monde_2022$Home.Team <- ifelse(matchs_coupe_monde_2022$Group=="All",str_replace_all(matchs_coupe_monde_2022$Home.Team,"[\t\b ]",""),matchs_coupe_monde_2022$Home.Team)
+matchs_coupe_monde_2022$Away.Team <- ifelse(matchs_coupe_monde_2022$Group=="All",str_replace_all(matchs_coupe_monde_2022$Away.Team,"[\t\b ]",""),matchs_coupe_monde_2022$Away.Team)
+matchs_coupe_monde_2022 <- ungroup(matchs_coupe_monde_2022)
+
+```
+
+```{r}
+##### Obtenez toutes les équipes participantes à la Coupe du monde de football 2022 ##### 
+
+participants_fifa_2022 <- filter(matchs_coupe_monde_2022, matchs_coupe_monde_2022$Round.Number=="G") 
+participants_fifa_2022 <- count(participants_fifa_2022, Home.Team)
+participants_fifa_2022 <- select(participants_fifa_2022, Home.Team)
+# retourne un tableau de chaînes représentant le nom du terrain
+participants_fifa_2022 <- participants_fifa_2022$Home.Team
+```
+
+```{r}
+##### Créez une colonne Importance pour l'importance de tous les tournois #####
+
+matchs_internationaux$Importance <- NA
+matchs_internationaux$Importance[matchs_internationaux$tournament == "FIFA World Cup"] <- 1
+matchs_internationaux$Importance[str_detect(matchs_internationaux$tournament,"UEFA")] <- .8
+matchs_internationaux$Importance[matchs_internationaux$tournament == "Copa América"] <- .5
+matchs_internationaux$Importance[matchs_internationaux$tournament == "African Cup of Nations"] <- .3
+matchs_internationaux$Importance[matchs_internationaux$tournament != "Friendly" & is.na(matchs_internationaux$Importance)  ] <- .1
+matchs_internationaux$Importance[matchs_internationaux$tournament == "Friendly"] <- .01
+matchs_internationaux$Importance[str_detect(matchs_internationaux$tournament,"qualification")] <- .5
+```
+
+```{r}
+##### Retrouvez les finalistes de toutes les coupes du monde de la FIFA. #####
+
+# Obtenez tous les matchs de la coupe du monde de la FIFA 
+finalistes_coupe_monde <- matchs_internationaux[str_detect(matchs_internationaux$tournament,"FIFA") &  !str_detect(matchs_internationaux$tournament,"qualification"),] 
+# sélectionner uniquement la dernière de chaque année pour trouver les finales 
+finalistes_coupe_monde <- mutate(finalistes_coupe_monde, day=as.numeric(format(date,"%j")))
+finalistes_coupe_monde <- group_by(finalistes_coupe_monde, Year)
+finalistes_coupe_monde <- arrange(finalistes_coupe_monde, -Year,-day)
+finalistes_coupe_monde <- filter(finalistes_coupe_monde, day==max(day)) 
+# identifier les gagnants et les perdants 
+finalistes_coupe_monde$Winner <- ifelse(finalistes_coupe_monde$home_score>finalistes_coupe_monde$away_score,finalistes_coupe_monde$home_team,finalistes_coupe_monde$away_team)
+finalistes_coupe_monde$Looser <- ifelse(finalistes_coupe_monde$home_score<finalistes_coupe_monde$away_score,finalistes_coupe_monde$home_team,finalistes_coupe_monde$away_team)
+# Sélectionnez les colonnes utiles et modifiez l'ordre
+finalistes_coupe_monde <-  select(finalistes_coupe_monde, Year,date,Winner,Looser,city)
+finalistes_coupe_monde <- finalistes_coupe_monde[order(-finalistes_coupe_monde$Year),]
+```
+
+```{r}
+equipes_matchs_internationaux <- rbind(matchs_internationaux %>% select(Year,date,Team=home_team, Opponent = away_team,
+                                  scored=home_score,received=away_score,Importance) 
+               %>% mutate(Location="Home"),
+              matchs_internationaux %>% select(Year,date,Team=away_team, Opponent = home_team,
+                                 scored=away_score,received=home_score,Importance) %>% 
+               mutate(Location="Away")) %>%
+         arrange(date) %>% 
+group_by(Year,Team) 
+
+```
+
+```{r}
+##### Résumer des scores de l'équipe par décennie ##### 
+
+analyse_equipes_par_decennie <- summarise(equipes_matchs_internationaux, Won=mean(as.numeric(scored>received)), Matches=n(), Importance=sum(Importance))
+analyse_equipes_par_decennie <- ungroup(analyse_equipes_par_decennie)
+analyse_equipes_par_decennie <- mutate(analyse_equipes_par_decennie, Year10=floor(Year/10)*10)
+analyse_equipes_par_decennie <- group_by(analyse_equipes_par_decennie, Year10, Team)
+analyse_equipes_par_decennie <- summarise(analyse_equipes_par_decennie, Won=mean(Won), Matches=sum(Matches),Importance=sum(Importance)) 
+analyse_equipes_par_decennie <- mutate(analyse_equipes_par_decennie, Strength=Won*Importance) %>%  arrange(-Year10,-Strength) %>% group_by(Year10)
+analyse_equipes_par_decennie <- mutate(analyse_equipes_par_decennie, Strength=Strength/max(Strength))
+
+```
+
+```{r}
+equipes_matchs_internationaux_2 <- equipes_matchs_internationaux
+equipes_matchs_internationaux_2$Year10 <- floor(equipes_matchs_internationaux_2$Year/10)*10
+
+names(analyse_equipes_par_decennie)[names(analyse_equipes_par_decennie) == "Team"] <- "Opponent"
+
+dataset_matchs_analyses <- merge(x = equipes_matchs_internationaux_2, y = analyse_equipes_par_decennie, by = c("Year10", "Opponent"))
+dataset_matchs_analyses <- dataset_matchs_analyses[, -12]
+dataset_matchs_analyses <- dataset_matchs_analyses[, -10]
+dataset_matchs_analyses <- dataset_matchs_analyses[, -10]
+names(dataset_matchs_analyses)[names(dataset_matchs_analyses) == "Strength"] <- "Crude_Opp_Strength"
+names(dataset_matchs_analyses)[names(dataset_matchs_analyses) == "Importance.x"] <- "Importance"
+dataset_matchs_analyses <- filter(dataset_matchs_analyses, Year >= 1955 )
+dataset_matchs_analyses$Month <- months(dataset_matchs_analyses$date, abbreviate = TRUE)
+dataset_matchs_analyses$Month_num <- format(dataset_matchs_analyses$date, format = "%m")
+```
+
+```{r}
+dataset_matchs_gagnes <- left_join(dataset_matchs_analyses, select(finalistes_coupe_monde, Year,Next_final=date),by="Year")  
+dataset_matchs_gagnes <- ungroup(dataset_matchs_gagnes)
+dataset_matchs_gagnes <- arrange(dataset_matchs_gagnes, date)  
+dataset_matchs_gagnes <- fill(dataset_matchs_gagnes, Next_final, .direction="up")
+dataset_matchs_gagnes <- filter(dataset_matchs_gagnes, Year>=1955)
+dataset_matchs_gagnes <- mutate(dataset_matchs_gagnes, Years_to_next_final=as.numeric(Next_final-date)/365)
+dataset_matchs_gagnes <- select(dataset_matchs_gagnes, -Year10,-Month,-Next_final) 
+dataset_matchs_gagnes <- mutate(dataset_matchs_gagnes, Game_Won=as.numeric(scored>received ))
+```
+
+```{r}
+equipes_potentielles <- dataset_matchs_gagnes
+equipes_potentielles <- filter(equipes_potentielles, Importance == 1 | Team %in% participants_fifa_2022) 
+equipes_potentielles <- count(equipes_potentielles, Team) 
+equipes_potentielles <- filter(equipes_potentielles, n>0)
+
+```
+
+```{r}
+mytransformations <- function(data) {
+    mutate(data, Year2=Year^2,
+           Year3=Year^3,
+           Home=as.numeric(Location=="Home"))
+}
+```
+
+```{r}
+pred_data <- dataset_matchs_gagnes
+pred_data <- filter(pred_data, Year>1955 & Team %in% equipes_potentielles$Team)
+pred_data <- group_by(pred_data, Team)
+pred_data <- mytransformations(pred_data)
+```
+
+```{r}
+training_data <- data_grid(filter(dataset_matchs_gagnes, Year>1955 & Team %in% equipes_potentielles$Team)  , 
+                        Team= Team, Year = seq_range(Year,100),
+                        Crude_Opp_Strength=1,Importance=1,Location="Home") 
+training_data <- mytransformations(training_data)
+
+```
+
+```{r}
+#### Fit notre modèle #### 
+
+model <- NULL
+model <- do(pred_data, 
+      overall = glm(Game_Won ~ Crude_Opp_Strength+Importance+Year+Year^2+Year^3+Home+1,
+                 family=quasibinomial(link='logit'),data = ., weight=1/(1+2022-Year)),
+      offensive = glm(scored ~ Crude_Opp_Strength+Importance+Year+Year^2+Year^3+Home+1,
+                 family="poisson",data = ., weight=1/(1+2022-Year)),
+      defensive = glm(received ~ Crude_Opp_Strength+Importance+Year+Year^2+Year^3+Home+1,
+                 family="poisson",data = ., weight=1/(1+2022-Year)))
+```
+
+```{r}
+resultats_generaux <- map2_df(model$overall, split(training_data,training_data$Team), 
+             ~augment(.x, newdata = .y,type.predict = "response"))
+resultats_generaux <- mutate(resultats_generaux, fitted=round(.fitted,digits=4), min95=round(.fitted+qnorm(.025),digits=4), max95=round(.fitted+qnorm(.975),digits=4))
+resultats_generaux <- select(resultats_generaux, Team,Year,Overall=fitted,Overall_min95=min95,Overall_max95=max95)
+
+```
+
+```{r}
+resultats_attaque <- map2_df(model$offensive, split(training_data,training_data$Team), 
+             ~augment(.x, newdata = .y,type.predict = "response"))
+resultats_attaque <- mutate(resultats_attaque, fitted=round(.fitted,digits=4), min95=round(.fitted+qnorm(.025),digits=4), max95=round(.fitted+qnorm(.975),digits=4))
+resultats_attaque <- select(resultats_attaque, Team,Year,Offensive=fitted,Offensive_min95=min95,Offensive_max95=max95)
+```
+
+```{r}
+resultats_defense <- map2_df(model$defensive, split(training_data,training_data$Team), 
+             ~augment(.x, newdata = .y,type.predict = "response"))
+resultats_defense <- mutate(resultats_defense, fitted=round(.fitted,digits=4), min95=round(.fitted+qnorm(.025),digits=4), max95=round(.fitted+qnorm(.975),digits=4)) 
+resultats_defense <- select(resultats_defense, Team,Year,Defensive=fitted,Defensive_min95=min95,Defensive_max95=max95)
+```
+
+```{r}
+resultats_predits <- cbind(resultats_generaux,
+                           select(resultats_attaque, -Team,-Year),
+                           select(resultats_defense, -Team,-Year))
+resultats_predits <- gather(resultats_predits, Key,Value,3:11) 
+resultats_predits <- mutate(resultats_predits, Area=str_split(Key,"_",simplify = TRUE)[,1],
+                                            Statistic=str_split(Key,"_",simplify = TRUE)[,2],
+                                            Statistic=ifelse(Statistic=="","est",Statistic)) 
+resultats_predits <- select(resultats_predits, -Key) 
+resultats_predits <- group_by(resultats_predits, Area,Statistic,Year)  
+resultats_predits <- arrange(resultats_predits, Area,Area,Statistic,-Year,Team)  
+resultats_predits <- mutate(resultats_predits, Value=ifelse(Area=="Defensive",1/(1+Value),Value),
+       Value=50+20*scale(Value,center=T,scale=T))
+```
+
+```{r}
+strengthjoin <- function(data){
+    data %>% 
+    left_join(.,resultats_predits_par_an %>% filter(Year==2022) %>% select(-Year) %>% 
+               rename(home_team=Team,home_overall=Overall,
+                      home_defensive=Defensive,home_offensive=Offensive), 
+               by=c("home_team")) %>%
+    left_join(.,resultats_predits_par_an %>% filter(Year==2022) %>% select(-Year) %>%
+               rename(away_team=Team,away_overall=Overall,
+                      away_defensive=Defensive,away_offensive=Offensive), 
+               by=c("away_team"))
+}
+```
+
+```{r}
+options(repr.plot.width=8, repr.plot.height=5)
+gagnants_fifa <- count(finalistes_coupe_monde, Winner)
+gagnants_fifa <- gagnants_fifa$Winner
+dataset_generaux_defense_attaque <- filter(resultats_predits, Statistic=="est")  
+dataset_generaux_defense_attaque <- group_by(dataset_generaux_defense_attaque, Team,Area) 
+dataset_generaux_defense_attaque <- select(dataset_generaux_defense_attaque, -Statistic)
+dataset_generaux_defense_attaque <- top_n(dataset_generaux_defense_attaque, 1,Year)
+dataset_generaux_defense_attaque <- filter(dataset_generaux_defense_attaque, Team %in% participants_fifa_2022) 
+dataset_generaux_defense_attaque <- ungroup(dataset_generaux_defense_attaque) 
+dataset_generaux_defense_attaque <- mutate(dataset_generaux_defense_attaque, Winner=ifelse(Team %in% gagnants_fifa,"Ancien Champion","Jamais gagné")) 
+dataset_generaux_defense_attaque <- arrange(dataset_generaux_defense_attaque, Area,-Value)
+
+
+dataset_generaux_defense_attaque$Area[dataset_generaux_defense_attaque$Area == "Defensive"] <- "Défense"
+dataset_generaux_defense_attaque$Area[dataset_generaux_defense_attaque$Area == "Overall"] <- "Généraux" 
+dataset_generaux_defense_attaque$Area[dataset_generaux_defense_attaque$Area == "Offensive"] <- "Attaque"  
+
+ggplot(dataset_generaux_defense_attaque,aes(x=reorder(Team,Value),y=Value,fill=Winner)) + 
+facet_grid(~Area) + geom_bar(stat="identity") + coord_flip() + 
+    labs(x="",title="Performances équipes coupe du monde 2022",fill="",y="Pourcentage") +
+    scale_fill_manual(values  = c("Ancien Champion" = "blue", "Jamais gagné" = "lightblue")) +
+  theme(legend.position="bottom")
+```
+
+```{r}
+resultats_predits_par_an <- resultats_predits
+resultats_predits_par_an <- filter(resultats_predits_par_an, Statistic=="est") 
+resultats_predits_par_an <- ungroup(resultats_predits_par_an) 
+resultats_predits_par_an <- select(resultats_predits_par_an, -Statistic)
+resultats_predits_par_an <- mutate(resultats_predits_par_an, Year=round(Year)) 
+resultats_predits_par_an <- group_by(resultats_predits_par_an, Team,Area,Year) 
+resultats_predits_par_an <- summarise(resultats_predits_par_an, Value=mean(Value)) 
+resultats_predits_par_an <- ungroup(resultats_predits_par_an) 
+resultats_predits_par_an <- spread(resultats_predits_par_an, Area,Value)
+
+resultats_depuis_1955 <- filter(matchs_internationaux, Year>1955 & tournament == "FIFA World Cup") 
+resultats_depuis_1955 <- left_join(resultats_depuis_1955,resultats_predits_par_an %>% 
+               rename(home_team=Team,home_overall=Overall,
+                      home_defensive=Defensive,home_offensive=Offensive), 
+               by=c("home_team","Year"))
+resultats_depuis_1955 <- left_join(resultats_depuis_1955,resultats_predits_par_an %>% 
+               rename(away_team=Team,away_overall=Overall,
+                      away_defensive=Defensive,away_offensive=Offensive), 
+               by=c("away_team","Year"))  
+resultats_depuis_1955 <- rename(resultats_depuis_1955, Date=date) 
+resultats_depuis_1955 <- mutate(resultats_depuis_1955, metricdate=as.numeric(format(as.Date(Date),"%Y"))+
+       as.numeric(format(as.Date(Date),"%j"))/366) 
+resultats_depuis_1955 <- select(resultats_depuis_1955, -city,-country,-neutral,-Date) 
+```
+
+```{r}
+
+resultat_domicile <- glm(home_score ~ metricdate
+                            + I(metricdate*metricdate)
+                            + I(metricdate*metricdate*metricdate)
+                            + home_defensive
+                            + home_offensive
+                            + home_overall 
+                            + away_defensive 
+                            + away_offensive 
+                            + away_overall
+                            + 1 , data=resultats_depuis_1955, family="poisson")
+
+resultat_exterieur <- glm(away_score ~ metricdate
+                            + I(metricdate*metricdate)
+                            + I(metricdate*metricdate*metricdate)
+                            + home_defensive
+                            + home_offensive
+                            + home_overall 
+                            + away_defensive 
+                            + away_offensive 
+                            + away_overall
+                            + 1 , data=resultats_depuis_1955, family="poisson")
+
+probabilites <- glm(home_score>away_score ~ metricdate
+                            + I(metricdate*metricdate)
+                            + I(metricdate*metricdate*metricdate)
+                            + home_defensive
+                            + home_offensive
+                            + home_overall 
+                            + away_defensive 
+                            + away_offensive 
+                            + away_overall
+                            + 1 , data=resultats_depuis_1955, family=binomial(link='logit'))
+
+predictresults <- function(data) {
+rawdata <- data
+data <- data %>% mutate(metricdate=as.numeric(format(as.Date(Date),"%Y"))+
+                        as.numeric(format(as.Date(Date),"%j"))/366)
+cbind(rawdata,    
+cbind(
+    augment(resultat_domicile,newdata=data,type.predict = "response") %>% 
+                select(home_goals=.fitted),
+    augment(resultat_exterieur,newdata=data,type.predict = "response") %>% 
+            select(away_goals=.fitted), 
+    augment(probabilites,newdata=data,
+            type.predict = "response") %>% mutate(Probability=.fitted*100) %>% 
+            select(home_prob=Probability) %>% ungroup() %>%
+            mutate(away_prob=100-home_prob))) %>%
+    mutate(Winner=ifelse(home_prob>=50,home_team,away_team),
+           Looser=ifelse(home_prob<50,home_team,away_team))
+    }
+```
+
+```{r}
+
+matchs_coupe_monde_2022 <- rename(matchs_coupe_monde_2022, home_team = Home.Team, away_team = Away.Team)
+
+```
+
+```{r}
+
+poules_predits <- filter(matchs_coupe_monde_2022, Round.Number =="G") 
+poules_predits <- strengthjoin(poules_predits)
+poules_predits <- ungroup(poules_predits) 
+poules_predits <- predictresults(poules_predits)
+
+group_tables <- rbind(
+                    poules_predits %>% 
+                        select(Group,Round.Number,Team=home_team,Scored=home_goals,
+                               Received=away_goals,Prob=home_prob),
+                    poules_predits %>%  
+                            select(Group,Round.Number,Team=away_team,Scored=away_goals,
+                                   Received=home_goals,Prob=away_prob)
+                     ) %>% 
+                mutate(
+                    Scored=round(Scored),
+                    Received=round(Received),
+                    Prob=round(Prob,digits=1),
+                    Pts = ifelse(Scored>Received,3,1),
+                    Pts = ifelse(Scored<Received,0,Pts)) %>%
+                group_by(Group,Team) %>% 
+                    summarise(Goals=sum(Scored-Received),
+                              Pts=sum(Pts),
+                              Prob=mean(Prob)) %>% 
+                arrange(Group,-Pts,-Goals) %>% 
+                    mutate(Round="Groupstage",
+                           Rank=1:n(),
+                           Label=paste0(str_split(Group," ",simplify=T)[,2],Rank))
+
+poules_gagnants <- filter(group_tables, Rank<3) 
+poules_gagnants <- ungroup(poules_gagnants) 
+poules_gagnants <- select(poules_gagnants, Team,Label)
+
+options(repr.plot.width=6, repr.plot.height=3)
+plot.grouptables <- mutate(group_tables, Prob = round(Prob))
+plot.grouptables <- select(plot.grouptables, Group,Rank,Team,Pts,Goals) 
+ggplot(plot.grouptables ,aes(x=Group,label=Team,y=Rank,colour=Pts)) + geom_text(size=4) + guides(colour=F) +
+theme_minimal() + scale_color_viridis() + scale_y_continuous(limits=c(0.75,4.25),breaks=seq(1,4,1)) + 
+labs(y="Rank",x="",title="Resultats poules") + coord_flip()
+
+options(repr.plot.width=6, repr.plot.height=4)
+plot.grouppoints <- mutate(group_tables, Prob = round(Prob))
+plot.grouppoints <- select(plot.grouppoints, Group,Rank,Team,Pts,Goals)
+ggplot(plot.grouppoints, aes(x=Group,label=Team,y=Pts,colour=Pts)) + geom_text_repel(size=3.5) + 
+geom_point() + guides(colour=F) + theme_minimal() + scale_color_viridis() + 
+scale_y_continuous(limits=c(0,9),breaks=seq(0,10,2)) + labs(y="",x="",title="Points Poules")
+plot.grouptables
+plot.grouppoints
+```
+
+```{r}
+joinwinners <- function(target,source) {target %>% 
+    left_join(.,source %>% rename(home_team=Label),by=c("home_team")) %>% 
+mutate(home_team=Team) %>% select(-Team) %>%
+left_join(.,source %>% rename(away_team=Label),by=c("away_team"))  %>%
+mutate(away_team=Team) %>% select(-Team)
+}
+
+# Last 16
+last16_predits <- filter(matchs_coupe_monde_2022, Round.Number == "LS")  
+last16_predits <- joinwinners(last16_predits, poules_gagnants)
+last16_predits <- strengthjoin(last16_predits) 
+last16_predits <- predictresults(last16_predits)
+
+# Quarts de finale
+quart_predits <- filter(matchs_coupe_monde_2022, Round.Number == "QF") 
+quart_predits <- joinwinners(quart_predits, select(last16_predits, Label=GameID,Team=Winner)) 
+quart_predits <- strengthjoin(quart_predits) 
+quart_predits <- predictresults(quart_predits)
+
+# Demi finales
+demi_predits <- filter(matchs_coupe_monde_2022, Round.Number == "SF") 
+demi_predits <- joinwinners(demi_predits, select(quart_predits, Label=GameID,Team=Winner)) 
+demi_predits <- strengthjoin(demi_predits) 
+demi_predits <- predictresults(demi_predits)
+
+# Finale
+final_predits <- rbind(matchs_coupe_monde_2022 %>% filter(Round.Number == "F") %>% filter(GameID == "F1") %>% 
+                       joinwinners(.,demi_predits %>% select(Label=GameID,Team=Looser)),
+      matchs_coupe_monde_2022 %>% filter(Round.Number == "F") %>% filter(GameID == "F2") %>% 
+                       joinwinners(.,demi_predits %>% select(Label=GameID,Team=Winner))) 
+final_predits <- strengthjoin(final_predits)
+final_predits <- predictresults(final_predits)
+```
+
+```{r}
+final_predits <- rename(final_predits, Round = Round.Number)
+demi_predits <- rename(demi_predits, Round = Round.Number)
+quart_predits <- rename(quart_predits, Round = Round.Number)
+last16_predits <- rename(last16_predits, Round = Round.Number)
+```
+
+```{r}
+resultats_predits_fifa_2022 <- bind_rows(group_tables  %>% select(Round,Group,Team,Prob),
+      last16_predits %>% select(Round,Group=GameID,Team=home_team,Prob=home_prob),
+      last16_predits %>% select(Round,Group=GameID,Team=away_team,Prob=away_prob),
+         quart_predits %>% select(Round,Group=GameID,Team=home_team,Prob=home_prob),
+      quart_predits %>% select(Round,Group=GameID,Team=away_team,Prob=away_prob),
+         demi_predits %>% select(Round,Group=GameID,Team=home_team,Prob=home_prob),
+      demi_predits %>% select(Round,Group=GameID,Team=away_team,Prob=away_prob),
+      final_predits %>% filter(GameID=="F2") %>% select(Round,Group=GameID,Team=home_team,Prob=home_prob),
+      final_predits %>% filter(GameID=="F2") %>% select(Round,Group=GameID,Team=away_team,Prob=away_prob),
+      final_predits %>% filter(GameID=="F2") %>% mutate(Round="Winner",Group="Winner",Team=Winner,Prob=100) %>%
+         select(Round,Group,Team,Prob)) 
+resultats_predits_fifa_2022 <- ungroup(resultats_predits_fifa_2022)
+resultats_predits_fifa_2022 <- mutate(resultats_predits_fifa_2022, Prob=round(Prob,digits=1),
+             Round=ordered(Round, levels = c("Groupstage", "LS","QF","SF","F","Winner" ))) 
+resultats_predits_fifa_2022 <- group_by(resultats_predits_fifa_2022, Team)
+resultats_predits_fifa_2022 <- arrange(resultats_predits_fifa_2022, Team,Round)
+resultats_predits_fifa_2022 <- mutate(resultats_predits_fifa_2022, Source=lag(as.character(Round)),
+                                   Target=lead(as.character(Round)),
+                                  Source=ifelse(is.na(Source),"Qualification",Source),
+                                  Target=ifelse(is.na(Target),"Dropout",Target),
+                                  Target=ordered(Target,levels = c("Groupstage","Dropout", "LS","QF","SF","Winner")), 
+                                  Source=ordered(Source,levels = c("Qualification","Groupstage", "LS","QF","SF","F","Winner"))
+                                  )
+options(repr.plot.width=7, repr.plot.height=4,dpi=600)      
+plot.predictions<-ggplot(resultats_predits_fifa_2022, aes(y=as.character(Team),x=Round,group=Team,colour=Team,size=3)) + 
+    geom_point() +geom_line(size=1.5)+guides(size=F,colour=F) +
+    scale_color_viridis(discrete=T) + theme_minimal() +labs(y="",x="") +
+    ggtitle("Prédictions coupe du monde 2022") + coord_flip() + 
+    theme(axis.text.x = element_text(angle = 90, vjust =0.25,hjust=1))
+plot.predictions
+
+```
+
